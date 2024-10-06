@@ -37,8 +37,10 @@ from .prompt_base import (
 )
 import sys
 sys.path.append('..')
-from utils import LoadJsonL, extract_jsons_from_text, extract_numbered_list, trace_back
+import openai
+from utils import LoadJsonL, extract_jsons_from_text, extract_numbered_list, trace_back, get_num_tokens_from_messages
 
+cilent = openai.OpenAI()
 
 # DESIRE_DESC = {
 #     'default': "Your goal is to fully utilize your budget while actively participating in the auction",
@@ -136,23 +138,20 @@ class Bidder(BaseModel):
         )
         self._parse_llm()
         self.dialogue_history += [
-            SystemMessage(content=self.system_message), 
-            AIMessage(content='')
-        ]
+            {"role": "system", "content": self.system_message},
+            {"role": "assistant", "content": ''}
+]
         self.budget_history.append(self.budget)
         self.profit_history.append(self.profit)
 
     def _parse_llm(self):
         if 'gpt-' in self.model_name:
-            self.llm = ChatOpenAI(model=self.model_name, temperature=self.temperature, max_retries=30, request_timeout=1200)
-        elif 'claude' in self.model_name:
-            self.llm = ChatAnthropic(model=self.model_name, temperature=self.temperature, default_request_timeout=1200)
-        elif 'bison' in self.model_name:
-            self.llm = ChatGooglePalm(model_name=f'models/{self.model_name}', temperature=self.temperature)
-        elif 'rule' in self.model_name or 'human' in self.model_name:
-            self.llm = None
+            self.llm = cilent.chat.completions.create(model = self.model_name,
+                temperature = self.temperature,
+                timeout = 1200)
         else:
-            raise NotImplementedError(self.model_name)
+            raise NotImplementedError(f"Model {self.model_name} is not supported.")
+
     
     # def _rotate_openai_org(self):
     #     # use two organizations to avoid rate limit
@@ -161,39 +160,35 @@ class Bidder(BaseModel):
     #     else:
     #         return None
     
-    def _run_llm_standalone(self, messages: list):
-        
-        with get_openai_callback() as cb:
-            for i in range(6):
-                try:
-                    input_token_num = self.llm.get_num_tokens_from_messages(messages)
-                    if 'claude' in self.model_name:     # anthropic's claude
-                        result = self.llm(messages, max_tokens_to_sample=2048)
-                    elif 'bison' in self.model_name:    # google's palm-2
-                        max_tokens = min(max(3900 - input_token_num, 192), 2048)
-                        if isinstance(self.llm, ChatVertexAI):
-                            result = self.llm(messages, max_output_tokens=max_tokens)
-                        else:
-                            result = self.llm(messages)
-                    elif 'gpt' in self.model_name:      # openai
-                        if 'gpt-3.5-turbo' in self.model_name and '16k' not in self.model_name:
-                            max_tokens = max(3900 - input_token_num, 192)
-                        else:
-                            # gpt-4
-                            # self.llm.openai_organization = self._rotate_openai_org()
-                            max_tokens = max(8000 - input_token_num, 192)
-                        result = self.llm(messages, max_tokens=max_tokens)
-                    elif 'llama' in self.model_name.lower():
-                        raise NotImplementedError
-                    else:
-                        raise NotImplementedError
-                    break
-                except:
-                    print(f'Retrying for {self.model_name} ({i+1}/6), wait for {2**(i+1)} sec...')
-                    time.sleep(2**(i+1))
-            self.openai_cost += cb.total_cost
-            self.llm_token_count = self.llm.get_num_tokens_from_messages(messages)
-        return result.content
+    def _run_llm_standalone(self, input_messages: list):
+        for i in range(6):
+            try:
+                input_token_num = get_num_tokens_from_messages(input_messages, self.model_name)
+                if 'gpt-3.5-turbo' in self.model_name and '16k' not in self.model_name:
+                    max_tokens = max(3900 - input_token_num, 192)
+                elif 'gpt-4' in self.model_name:
+                    # gpt-4
+                    # self.llm.openai_organization = self._rotate_openai_org()
+                    max_tokens = max(8000 - input_token_num, 192)
+                else:
+                    raise NotImplementedError(f"Model {self.model_name} is not supported.")
+                
+                response = self.llm(messages = input_messages, max_tokens=max_tokens)
+                result = response.choices[0].message['content'].strip()
+                self.openai_cost += response['usage']['total_tokens']
+                break
+            except openai.error.RateLimitError:
+                wait_time = 2 ** (i + 1)
+                print(f"Rate limit exceeded. Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            except openai.error.AuthenticationError:
+                print("Authentication failed. Please check your API key.")
+                return ""
+            except openai.error.OpenAIError as e:
+                print(f"An error occurred: {e}")
+                return ""
+        self.llm_token_count = get_num_tokens_from_messages(input_messages, self.model_name)
+        return result
 
     def _get_estimated_value(self, item):
         value = item.true_value * (1 + self.overestimate_percent / 100)
@@ -243,14 +238,14 @@ class Bidder(BaseModel):
         instruct_learn = INSTRUCT_LEARNING_TEMPLATE.format(
             past_auction_log=past_auction_log,
             past_learnings=past_learnings)
-
-        result = self._run_llm_standalone([HumanMessage(content=instruct_learn)])
+        user_input_messages = [{"role": "user", "content": instruct_learn}]
+        result = self._run_llm_standalone(user_input_messages)
         self.dialogue_history += [
-            HumanMessage(content=instruct_learn),
-            AIMessage(content=result),
+            user_input_messages,
+            {"role": "assistant", "content": result}
         ]
         self.llm_prompt_history.append({
-            'messages': [{x.type: x.content} for x in [HumanMessage(content=instruct_learn)]],
+            'messages': user_input_messages,
             'result': result,
             'tag': 'learn_0'
         })
@@ -319,8 +314,8 @@ class Bidder(BaseModel):
             self.cur_plan = ''
             return None
 
-        system_msg = SystemMessage(content=self.system_message)
-        plan_msg = HumanMessage(content=plan_instruct)
+        system_msg = {"role": "system", "content": self.system_message}
+        plan_msg = {"role": "user", "content": plan_instruct}
         messages = [system_msg, plan_msg]
         result = self._run_llm_standalone(messages)
         
@@ -330,10 +325,10 @@ class Bidder(BaseModel):
         
         self.dialogue_history += [
             plan_msg,
-            AIMessage(content=result),
+            {"role": "assistant", "content": result}
         ]
         self.llm_prompt_history.append({
-            'messages': [{x.type: x.content} for x in messages],
+            'messages': [{x.role: x.content} for x in messages],
             'result': result,
             'tag': 'plan_0'
         })
@@ -352,8 +347,8 @@ class Bidder(BaseModel):
     
     def get_rebid_instruct(self, auctioneer_msg: str):
         self.dialogue_history += [
-            HumanMessage(content=auctioneer_msg),
-            AIMessage(content='')
+            {"role": "user", "content": auctioneer_msg},
+            {"role": "assistant", "content": ''}
         ]
         return auctioneer_msg
 
@@ -376,8 +371,8 @@ class Bidder(BaseModel):
             bid_instruct = f'Now, the auctioneer says: "{auctioneer_msg}"'
         
         self.dialogue_history += [
-            HumanMessage(content=bid_instruct),
-            AIMessage(content='')
+            {"role": "user", "content": auctioneer_msg},
+            {"role": "assistant", "content": ''}
         ]
         return bid_instruct
     
@@ -404,8 +399,8 @@ class Bidder(BaseModel):
         content = f'The current highest bid for {cur_item.name} is ${cur_bid}. '
         content += "I'm out!" if msg < 0 else f"I bid ${msg}! (Rule generated)"
         self.dialogue_history += [
-            HumanMessage(content=''),
-            AIMessage(content=content)
+            {"role": "user", "content": ''},
+            {"role": "assistant", "content": content}
         ]
         
         return msg
@@ -418,29 +413,29 @@ class Bidder(BaseModel):
         if self.model_name == 'rule':
             return ''
         
-        bid_msg = HumanMessage(content=bid_instruct)
+        bid_msg = {"role": "user", "content": bid_instruct}
         
         if self.plan_strategy == 'none':
-            messages = [SystemMessage(content=self.system_message)]
+            messages = [{"role": "system", "content": self.system_message}]
         else:
-            messages = [SystemMessage(content=self.system_message),
-                        HumanMessage(content=self.plan_instruct),
-                        AIMessage(content=self.cur_plan)]
+            messages = [{"role": "system", "content": self.system_message},
+                        {"role": "user", "content": self.plan_instruct},
+                        {"role": "assistant", "content": self.cur_plan}]
         
         self.bid_history += [bid_msg]
         messages += self.bid_history
         
         result = self._run_llm_standalone(messages)
         
-        self.bid_history += [AIMessage(content=result)]
+        self.bid_history += [{"role": "assistant", "content": self.cur_plan}]
 
         self.dialogue_history += [
-            HumanMessage(content=''),
-            AIMessage(content=result)
+            {"role": "user", "content": ''},
+            {"role": "assistant", "content": result}
         ]
         
         self.llm_prompt_history.append({
-            'messages': [{x.type: x.content} for x in messages],
+            'messages': [{x.role: x.content} for x in messages],
             'result': result,
             'tag': f'bid_{self.cur_item_id}'
         })
@@ -477,18 +472,18 @@ class Bidder(BaseModel):
             self.rule_bid_cnt = 0   # reset bid count for rule bidder
             return ''
         
-        messages = [SystemMessage(content=self.system_message)]
+        messages = [{"role": "system", "content": self.system_message}]
         # messages += self.bid_history
-        summ_msg = HumanMessage(content=instruct_summarize)
+        summ_msg = {"role": "user", "content": instruct_summarize}
         messages.append(summ_msg)
 
         status_quo_text = self._run_llm_standalone(messages)
         
-        self.dialogue_history += [summ_msg, AIMessage(content=status_quo_text)]
-        self.bid_history += [summ_msg, AIMessage(content=status_quo_text)]
+        self.dialogue_history += [summ_msg, {"role": "assistant", "content": status_quo_text}]
+        self.bid_history += [summ_msg, {"role": "assistant", "content": status_quo_text}]
         
         self.llm_prompt_history.append({
-            'messages': [{x.type: x.content} for x in messages],
+            'messages': [{x.role: x.content} for x in messages],
             'result': status_quo_text,
             'tag': f'summarize_{self.cur_item_id}'
         })
@@ -510,12 +505,12 @@ class Bidder(BaseModel):
                 # print(get_colored_text(err_msg, 'green'))
                 # print(get_colored_text(status_quo_text, 'red'))
                 
-                messages += [AIMessage(content=status_quo_text), 
-                             HumanMessage(content=err_msg)]
+                messages += [{"role": "assistant", "content": status_quo_text}, 
+                             {"role": "user", "content": err_msg}]
                 status_quo_text = self._run_llm_standalone(messages)
                 self.dialogue_history += [
-                    HumanMessage(content=err_msg),
-                    AIMessage(content=status_quo_text),
+                    {"role": "assistant", "content": status_quo_text}, 
+                    {"role": "user", "content": err_msg}
                 ]
                 cnt += 1
             else:
@@ -556,11 +551,12 @@ class Bidder(BaseModel):
             self.withdraw = False
             return 'Skip replanning for bidders with static or no plan.'
         
-        replan_msg = HumanMessage(content=instruct_replan)
+        replan_msg = {"role": "user", "content": instruct_replan}
         
-        messages = [SystemMessage(content=self.system_message),
-                    HumanMessage(content=self.plan_instruct),
-                    AIMessage(content=self.cur_plan)]
+        messages = [{"role": "system", "content": self.system_message},
+                    {"role": "user", "content": self.plan_instruct},
+                    {"role": "assistant", "content": self.cur_plan}]
+
         messages.append(replan_msg)
 
         result = self._run_llm_standalone(messages)
@@ -570,15 +566,15 @@ class Bidder(BaseModel):
         while len(new_plan_dict) == 0 and cnt < 2:
             err_msg = 'Your response does not contain a JSON-format priority list for items. Please revise your plan.'
             messages += [
-                AIMessage(content=result),
-                HumanMessage(content=err_msg),
+                {"role": "assistant", "content": result},
+                {"role": "user", "content": err_msg}
             ]
             result = self._run_llm_standalone(messages)
             new_plan_dict = extract_jsons_from_text(result)[-1]
             
             self.dialogue_history += [
-                HumanMessage(content=err_msg),
-                AIMessage(content=result),
+                {"role": "assistant", "content": result},
+                {"role": "user", "content": err_msg}
             ]
             cnt += 1
         
@@ -597,10 +593,10 @@ class Bidder(BaseModel):
 
         self.dialogue_history += [
             replan_msg,
-            AIMessage(content=result),
+            {"role": "assistant", "content": result},
         ]
         self.llm_prompt_history.append({
-            'messages': [{x.type: x.content} for x in messages],
+            'messages': [{x.role: x.content} for x in messages],
             'result': result,
             'tag': f'plan_{self.cur_item_id}'
         })
