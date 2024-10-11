@@ -1,7 +1,20 @@
 import ujson as json
 import re
 import traceback
+import tiktoken
 
+
+def get_num_tokens_from_messages(messages, model_name):
+        # Initialize the tokenizer for the specific model
+        encoding = tiktoken.encoding_for_model(model_name)
+        
+        # Calculate the total number of tokens
+        total_tokens = 0
+        for message in messages:
+            content = message['content']
+            total_tokens += len(encoding.encode(content))
+        
+        return total_tokens
 
 def trace_back(error_msg):
     exc = traceback.format_exc()

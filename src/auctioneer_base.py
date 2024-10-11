@@ -1,15 +1,16 @@
 import re
 from typing import List, Dict
-from langchain.prompts import PromptTemplate
-from langchain.chat_models import ChatOpenAI
-from langchain.callbacks import get_openai_callback
+#from langchain.prompts import PromptTemplate
+#from langchain.chat_models import ChatOpenAI
+#from langchain.callbacks import get_openai_callback
 from pydantic import BaseModel
 from collections import defaultdict
-from langchain.schema import (
-    AIMessage,
-    HumanMessage,
-    SystemMessage
-)
+import openai
+#from langchain.schema import (
+#    AIMessage,
+#    HumanMessage,
+#     SystemMessage
+#)
 import random
 import inflect
 from .bidder_base import Bidder
@@ -18,9 +19,11 @@ from .item_base import Item
 from .prompt_base import PARSE_BID_INSTRUCTION
 
 p = inflect.engine()
+cilent = openai.OpenAI()
 
 
 class Auctioneer(BaseModel):
+    information_disclosure_level: int = 0 # reserve for future use to indicate whether the auctioneer will disclose the bidding outcome to the bidders
     enable_discount: bool = False
     items: List[Item] = []
     cur_item: Item = None
@@ -55,6 +58,28 @@ class Auctioneer(BaseModel):
         cur_item = self.items_queue.pop(0)
         self.cur_item = cur_item
         return cur_item
+    
+    def call_openai_api(self, prompt:str) -> str:
+        try:
+            response = cilent.chat.completions.create(
+                model="gpt-3.5-turbo-0613",
+                messages = [
+                    {"role": "system", "content": "You are an auctioneer assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=150
+            )
+            self.openai_cost += response['usage']['total_tokens'] 
+            return response['choices'][0]['message']['content']
+        except openai.error.RateLimitError:
+            print("Rate limit exceeded. Please try again later.")
+            return ""
+        except openai.error.AuthenticationError:
+            print("Authentication failed. Please check your API key.")
+            return ""
+        except openai.error.OpenAIError as e:
+            print(f"An error occurred: {e}")
+            return ""
     
     def shuffle_items(self):
         random.shuffle(self.items)
@@ -186,11 +211,12 @@ class Auctioneer(BaseModel):
 
     def parse_bid(self, text: str):
         prompt = PARSE_BID_INSTRUCTION.format(response=text)
-        with get_openai_callback() as cb:
-            llm = ChatOpenAI(model='gpt-3.5-turbo-0613', temperature=0)
-            result = llm([HumanMessage(content=prompt)]).content
-            self.openai_cost += cb.total_cost
+        result = self.call_openai_api(prompt)
+        if not result:
+            print(f"Failed to parse bid: {text}")
+            return None
         
+        ## !!!!!! modify the api call using structed output 
         bid_number = re.findall(r'\$?\d+', result.replace(',', ''))
         # find number in the result
         if '-1' in result:

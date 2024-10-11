@@ -26,7 +26,6 @@ import matplotlib.pyplot as plt
 from .item_base import Item, item_list_equal
 from .prompt_base import (
     AUCTION_HISTORY,
-    # INSTRUCT_OBSERVE_TEMPLATE,
     _LEARNING_STATEMENT,
     INSTRUCT_PLAN_TEMPLATE,
     INSTRUCT_BID_TEMPLATE,
@@ -40,82 +39,82 @@ sys.path.append('..')
 import openai
 from utils import LoadJsonL, extract_jsons_from_text, extract_numbered_list, trace_back, get_num_tokens_from_messages
 
+# Initialize the OpenAI client (specific to your API setup)
 cilent = openai.OpenAI()
 
-# DESIRE_DESC = {
-#     'default': "Your goal is to fully utilize your budget while actively participating in the auction",
-#     'maximize_profit': "Your goal is to maximize your overall profit, and fully utilize your budget while actively participating in the auction. This involves strategic bidding to win items for less than their true value, thereby ensuring the difference between the price paid and the item's value is as large as possible",
-#     'maximize_items': "Your goal is to win as many items as possible, and fully utilize your budget while actively participating in the auction. While keeping your budget in mind, you should aim to participate broadly across different items, striving to be the highest bidder more often than not",
-# }   # remove period at the end of each description
-
-
+# DESIRE_DESC dictionary defines different bidding goals for agents. This is a simplified version of previous configurations.
 DESIRE_DESC = {
     'maximize_profit': "Your primary objective is to secure the highest profit at the end of this auction, compared to all other bidders",
     'maximize_items': "Your primary objective is to win the highest number of items at the end of this auction, compared to everyone else",
 }
 
-
+# Define a Bidder class that models the behavior of a bidding agent in an auction.
+# The Bidder class is a Pydantic BaseModel that defines the attributes and methods for a bidding agent.
 class Bidder(BaseModel):
-    name: str
-    model_name: str 
-    budget: int 
-    desire: str
-    plan_strategy: str
-    temperature: float = 0.7
-    overestimate_percent: int = 10
-    correct_belief: bool
-    enable_learning: bool = False
-    
-    llm: BaseLanguageModel = None
-    openai_cost = 0
-    llm_token_count = 0
-    
-    verbose: bool = False
-    auction_hash: str = ''
+    name: str  # Bidder's name
+    model_name: str  # Name of the model used for bidding (e.g., gpt-4, gpt-3.5)
+    budget: int  # Total budget available for the bidder
+    desire: str  # Bidding goal defined in DESIRE_DESC (maximize_profit, maximize_items)
+    plan_strategy: str  # Strategy to plan bids (e.g., static, dynamic)
+    temperature: float = 0.7  # Temperature parameter for controlling LLM responses
+    overestimate_percent: int = 10  # Percentage for overestimating item value (adds a buffer)
+    correct_belief: bool  # Boolean to determine whether to update beliefs based on new information
+    enable_learning: bool = False  # Flag to enable or disable learning from previous bids
 
-    system_message: str = ''
-    original_budget: int = 0
+    # LLM-specific attributes
+    llm: BaseLanguageModel = None  # Placeholder for LLM instance
+    openai_cost = 0  # Accumulated cost for LLM usage
+    llm_token_count = 0  # Track the number of tokens used in LLM calls
 
-    # working memory
-    profit: int = 0
-    cur_item_id = 0
-    items: list = []
-    dialogue_history: list = []     # for gradio UI display
-    llm_prompt_history: list = []   # for tracking llm calling
-    items_won = []
-    bid_history: list = []      # history of the bidding of a single item
-    plan_instruct: str = ''     # instruction for planning
-    cur_plan: str = ''          # current plan
-    status_quo: dict = {}       # belief of budget and profit, self and others
-    withdraw: bool = False      # state of withdraw
-    learnings: str = ''         # learnings from previous biddings. If given, then use it to guide the rest of the auction.
-    max_bid_cnt: int = 4        # Rule Bidder: maximum number of bids on one item (K = 1 starting bid + K-1 increase bid)
-    rule_bid_cnt: int = 0       # Rule Bidder: count of bids on one item
+    # General auction attributes
+    verbose: bool = False  # Flag to enable verbose logging
+    auction_hash: str = ''  # Unique identifier for the auction
 
-    # belief tracking
-    failed_bid_cnt: int = 0   # count of failed bids (overspending)
-    total_bid_cnt: int = 0    # count of total bids
-    self_belief_error_cnt: int = 0
-    total_self_belief_cnt: int = 0
-    other_belief_error_cnt: int = 0
-    total_other_belief_cnt: int = 0
-    
-    engagement_count: int = 0
-    budget_history = []
-    profit_history = []
-    budget_error_history = []
-    profit_error_history = []
-    win_bid_error_history = []
-    engagement_history = defaultdict(int)
-    all_bidders_status = {}   # track others' profit
-    changes_of_plan = []
-    
-    # not used
+    system_message: str = ''  # Initial system message for the LLM
+    original_budget: int = 0  # Store original budget for reference
+
+    # Memory and tracking variables
+    profit: int = 0  # Profit accumulated so far
+    cur_item_id = 0  # Current item index in the auction
+    items: list = []  # List of items available for bidding
+    dialogue_history: list = []  # Conversation history between agent and LLM
+    llm_prompt_history: list = []  # History of LLM prompts and responses
+    items_won = []  # List of items won by this bidder
+    bid_history: list = []  # History of all bids made in the current auction
+    plan_instruct: str = ''  # Instruction for creating a bidding plan
+    cur_plan: str = ''  # Current plan in text format
+    status_quo: dict = {}  # Status of the auction, including beliefs about competitors
+    withdraw: bool = False  # Flag indicating if the agent has withdrawn from bidding
+    learnings: str = ''  # Learning points from previous auctions
+    max_bid_cnt: int = 4  # Maximum number of bids allowed per item
+    rule_bid_cnt: int = 0  # Counter for the number of bids made on the current item
+
+    # Belief tracking for debugging and understanding agent behavior
+    failed_bid_cnt: int = 0  # Count of failed bids (bids exceeding budget)
+    total_bid_cnt: int = 0  # Total number of bids made
+    self_belief_error_cnt: int = 0  # Errors in self-belief tracking
+    total_self_belief_cnt: int = 0  # Total self-belief checks
+    other_belief_error_cnt: int = 0  # Errors in beliefs about other agents
+    total_other_belief_cnt: int = 0  # Total belief checks about other agents
+
+    # Historical data tracking
+    engagement_count: int = 0  # Count of active engagements in auctions
+    budget_history = []  # History of budget changes
+    profit_history = []  # History of profit changes
+    budget_error_history = []  # History of budget estimation errors
+    profit_error_history = []  # History of profit estimation errors
+    win_bid_error_history = []  # History of winning bid errors
+    engagement_history = defaultdict(int)  # Engagement history by item
+    all_bidders_status = {}  # Track other bidders' profit and status
+    changes_of_plan = []  # Log changes in strategy or plan
+
+    # Additional placeholders for unused features
     input_box: str = None
     need_input = False
     semaphore = 0
 
     class Config:
+        """Allow for arbitrary types in Pydantic BaseModel."""
         arbitrary_types_allowed = True
 
     def __repr__(self):
@@ -126,58 +125,68 @@ class Bidder(BaseModel):
     
     @classmethod
     def create(cls, **data):
+        """
+        Factory method to create a new Bidder instance and initialize it.
+        """
         instance = cls(**data)
         instance._post_init()
         return instance
 
     def _post_init(self):
+        """
+        Perform additional initialization after the instance is created.
+        This method sets up the initial budget, system message, and LLM.
+        """
         self.original_budget = self.budget
+        # Format and set the system message with the desired goal
         self.system_message = SYSTEM_MESSAGE.format(
             name=self.name,
             desire_desc=DESIRE_DESC[self.desire],
         )
         self._parse_llm()
+        # Initialize dialogue history with the system message
         self.dialogue_history += [
             {"role": "system", "content": self.system_message},
             {"role": "assistant", "content": ''}
-]
+        ]
+        # Track initial budget and profit history
         self.budget_history.append(self.budget)
         self.profit_history.append(self.profit)
 
     def _parse_llm(self):
+        """
+        Set up the LLM client based on the model name.
+        Currently supports only OpenAI models.
+        """
         if 'gpt-' in self.model_name:
-            self.llm = cilent.chat.completions.create(model = self.model_name,
-                temperature = self.temperature,
-                timeout = 1200)
+            self.llm = cilent.chat.completions.create(model=self.model_name,
+                temperature=self.temperature,
+                timeout=1200)
         else:
             raise NotImplementedError(f"Model {self.model_name} is not supported.")
 
-    
-    # def _rotate_openai_org(self):
-    #     # use two organizations to avoid rate limit
-    #     if os.environ.get('OPENAI_ORGANIZATION_1') and os.environ.get('OPENAI_ORGANIZATION_2'):
-    #         return random.choice([os.environ.get('OPENAI_ORGANIZATION_1'), os.environ.get('OPENAI_ORGANIZATION_2')])
-    #     else:
-    #         return None
-    
     def _run_llm_standalone(self, input_messages: list):
-        for i in range(6):
+        """
+        Run the LLM in a standalone mode using the provided messages.
+        This method handles rate limits and various exceptions.
+        """
+        for i in range(6):  # Retry up to 6 times if rate limit is exceeded
             try:
                 input_token_num = get_num_tokens_from_messages(input_messages, self.model_name)
                 if 'gpt-3.5-turbo' in self.model_name and '16k' not in self.model_name:
                     max_tokens = max(3900 - input_token_num, 192)
                 elif 'gpt-4' in self.model_name:
-                    # gpt-4
-                    # self.llm.openai_organization = self._rotate_openai_org()
                     max_tokens = max(8000 - input_token_num, 192)
                 else:
                     raise NotImplementedError(f"Model {self.model_name} is not supported.")
                 
-                response = self.llm(messages = input_messages, max_tokens=max_tokens)
+                # Call the LLM and capture the response
+                response = self.llm(messages=input_messages, max_tokens=max_tokens)
                 result = response.choices[0].message['content'].strip()
                 self.openai_cost += response['usage']['total_tokens']
                 break
             except openai.error.RateLimitError:
+                # Exponential backoff for rate limit errors
                 wait_time = 2 ** (i + 1)
                 print(f"Rate limit exceeded. Retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
@@ -187,14 +196,44 @@ class Bidder(BaseModel):
             except openai.error.OpenAIError as e:
                 print(f"An error occurred: {e}")
                 return ""
+        # Track the number of tokens used
         self.llm_token_count = get_num_tokens_from_messages(input_messages, self.model_name)
         return result
 
+
     def _get_estimated_value(self, item):
+        """
+        Calculate an overestimated value for an item based on the bidder's internal logic.
+
+        Args:
+            item (Item): The item object for which to calculate the estimated value.
+
+        Returns:
+            int: The estimated value for the item, overestimated by the defined percentage.
+
+        Notes:
+            This function multiplies the true value of the item by (1 + overestimate_percent / 100).
+            The `overestimate_percent` is a class attribute that introduces a bias in estimating item value.
+        """
         value = item.true_value * (1 + self.overestimate_percent / 100)
         return int(value)
-    
+
+
     def _get_cur_item(self, key=None):
+        """
+        Retrieve the current item in the list of items for the bidder.
+
+        Args:
+            key (str, optional): If provided, retrieves a specific attribute of the current item.
+        
+        Returns:
+            Any: The current item or a specific attribute if `key` is provided.
+            str: Returns 'no item left' if the current item index exceeds the number of items.
+
+        Usage:
+            If `key` is not provided, it returns the item object at `cur_item_id`.
+            If `key` is provided (e.g., "price"), it returns the attribute value for that key.
+        """
         if self.cur_item_id < len(self.items):
             if key is not None:
                 return self.items[self.cur_item_id].__dict__[key]
@@ -202,8 +241,22 @@ class Bidder(BaseModel):
                 return self.items[self.cur_item_id]
         else:
             return 'no item left'
-    
+
+
     def _get_next_item(self, key=None):
+        """
+        Retrieve the next item in the list, relative to the current item.
+
+        Args:
+            key (str, optional): If provided, retrieves a specific attribute of the next item.
+        
+        Returns:
+            Any: The next item object or a specific attribute if `key` is provided.
+            str: Returns 'no item left' if there is no subsequent item in the list.
+
+        Usage:
+            This function is similar to `_get_cur_item` but looks one index ahead.
+        """
         if self.cur_item_id + 1 < len(self.items):
             if key is not None:
                 return self.items[self.cur_item_id + 1].__dict__[key]
@@ -211,35 +264,90 @@ class Bidder(BaseModel):
                 return self.items[self.cur_item_id + 1]
         else:
             return 'no item left'
-    
+
+
     def _get_remaining_items(self, as_str=False):
+        """
+        Retrieve a list of all items remaining after the current item.
+
+        Args:
+            as_str (bool, optional): If True, returns a comma-separated string of remaining item names.
+        
+        Returns:
+            list or str: Returns a list of remaining items or a string of item names if `as_str` is True.
+        """
         remain_items = self.items[self.cur_item_id + 1:]
         if as_str:
-            return ', '.join([item.name for item in remain_items])
+            return ', '.join([item.name for item in remain_items])  # Create a string of item names
         else:
-            return remain_items
-    
+            return remain_items  # Return the remaining items as a list
+
+
     def _get_items_value_str(self, items: List[Item]):
+        """
+        Generate a formatted string describing the estimated values for a given list of items.
+
+        Args:
+            items (List[Item]): List of item objects to describe.
+
+        Returns:
+            str: A formatted string showing each item with its starting price and estimated value.
+
+        Usage:
+            This method is useful for generating textual instructions for planning or summary reports.
+            The format is as follows:
+                1. ItemName, starting price is $X. Your estimated value for this item is $Y.
+                2. ...
+        """
         if not isinstance(items, list):
-            items = [items]
+            items = [items]  # Ensure items is a list
+
         items_info = ''
         for i, item in enumerate(items):
-            estimated_value = self._get_estimated_value(item)
+            estimated_value = self._get_estimated_value(item)  # Get the estimated value of the item
             _info = f"{i+1}. {item}, starting price is ${item.price}. Your estimated value for this item is ${estimated_value}.\n"
             items_info += _info
         return items_info.strip()
+
     
     # ********** Main Instructions and Functions ********** #
     
     def learn_from_prev_auction(self, past_learnings, past_auction_log):
+        """
+        Learn from previous auction experiences using an LLM.
+
+        Args:
+            past_learnings (str): Text representing the learnings from the previous auctions.
+            past_auction_log (str): Text-based log of the auction's events.
+
+        Returns:
+            str: The summarized learnings generated by the LLM.
+
+        Description:
+            - This method leverages a pre-defined learning template (`INSTRUCT_LEARNING_TEMPLATE`) 
+            to format the inputs and sends it to the LLM using `_run_llm_standalone`.
+            - The response is then processed to extract key learning points and added to the dialogue history.
+            - Learning points are stored in `self.learnings` and appended to the `system_message` for further guidance.
+
+        Conditions:
+            - Learning is disabled if `enable_learning` is False or if the model is labeled as 'rule' or 'human'.
+        """
         if not self.enable_learning or 'rule' in self.model_name or 'human' in self.model_name:
             return ''
-        
+
+        # Prepare the instruction message for learning from past data.
         instruct_learn = INSTRUCT_LEARNING_TEMPLATE.format(
             past_auction_log=past_auction_log,
-            past_learnings=past_learnings)
+            past_learnings=past_learnings
+        )
+
+        # Create the LLM input message.
         user_input_messages = [{"role": "user", "content": instruct_learn}]
+        
+        # Run the LLM with the prepared message.
         result = self._run_llm_standalone(user_input_messages)
+        
+        # Track the dialogue history and LLM prompt history.
         self.dialogue_history += [
             user_input_messages,
             {"role": "assistant", "content": result}
@@ -250,79 +358,120 @@ class Bidder(BaseModel):
             'tag': 'learn_0'
         })
         
+        # Extract key learning points and update the system message.
         self.learnings = '\n'.join(extract_numbered_list(result))
         if self.learnings != '':
             self.system_message += f"\n\nHere are your key learning points and practical tips from a previous auction. You can use them to guide this auction:\n```\n{self.learnings}\n```"
-        
+
+        # If verbose mode is enabled, print a log message.
         if self.verbose:
             print(f"Learn from previous auction: {self.name} ({self.model_name}).")
         return result
 
+
     def _choose_items(self, budget, items: List[Item]):
-        '''
-        Choose items within budget for rule bidders.
-        Cheap ones first if maximize_items, expensive ones first if maximize_profit.
-        '''
+        """
+        Choose items to bid on based on the bidder's budget and goal.
+
+        Args:
+            budget (int): The available budget for bidding.
+            items (List[Item]): List of items to choose from.
+
+        Returns:
+            List[Item]: A list of items selected based on the budget and strategy.
+
+        Description:
+            - If `desire` is 'maximize_items', sorts items in ascending order by estimated value (cheapest first).
+            - If `desire` is 'maximize_profit', sorts items in descending order by estimated value (most valuable first).
+            - Iterates through the sorted list and selects items as long as the budget allows.
+        """
+        # Sort items based on estimated value.
         sorted_items = sorted(items, key=lambda x: self._get_estimated_value(x), 
-                              reverse=self.desire == 'maximize_profit')
-        
+                            reverse=self.desire == 'maximize_profit')
+
         chosen_items = []
         i = 0
         while budget >= 0 and i < len(sorted_items):
             item = sorted_items[i]
-            if item.price <= budget:
+            if item.price <= budget:  # Select the item if it is affordable.
                 chosen_items.append(item)
                 budget -= item.price
             i += 1
-        
+
         return chosen_items
-    
+
+
     def get_plan_instruct(self, items: List[Item]):
-        self.items = items
+        """
+        Generate a plan instruction string for the LLM to create a bidding plan.
+
+        Args:
+            items (List[Item]): List of items available for bidding.
+
+        Returns:
+            str: The formatted plan instruction string for the LLM.
+
+        Description:
+            - This method generates a textual instruction for the LLM, incorporating 
+            the bidder's budget, number of items, and goal (`desire`).
+            - It uses the `INSTRUCT_PLAN_TEMPLATE` to format the instruction message.
+        """
+        self.items = items  # Set the items list for the bidder.
         plan_instruct = INSTRUCT_PLAN_TEMPLATE.format(
-            bidder_name=self.name,       
-            budget=self.budget, 
-            item_num=len(items), 
-            items_info=self._get_items_value_str(items), 
+            bidder_name=self.name,
+            budget=self.budget,
+            item_num=len(items),
+            items_info=self._get_items_value_str(items),
             desire_desc=DESIRE_DESC[self.desire],
             learning_statement='' if not self.enable_learning else _LEARNING_STATEMENT
         )
         return plan_instruct
-    
-    def init_plan(self, plan_instruct: str):
-        '''
-        Plan for bidding with auctioneer's instruction and items information for customize estimated value.
-        plan = plan(system_message, instruct_plan)
-        '''
-        if 'rule' in self.model_name: 
-            # self.cur_plan = ', '.join([x.name for x in self._choose_items(self.budget, self.items)])
-            # self.dialogue_history += [
-            #     HumanMessage(content=plan_instruct),
-            #     AIMessage(content=self.cur_plan),
-            # ]
-            # return self.cur_plan
-            return ''
 
+
+    def init_plan(self, plan_instruct: str):
+        """
+        Initialize the bidding plan using LLM instructions.
+
+        Args:
+            plan_instruct (str): Instruction string for the LLM to generate a bidding plan.
+
+        Returns:
+            str: The generated bidding plan if applicable, else an empty string.
+
+        Description:
+            - For non-LLM bidders (e.g., 'rule'), the plan is created manually based on budget and items.
+            - Otherwise, the LLM generates a plan based on the provided instruction.
+            - Updates the `status_quo`, `plan_instruct`, and `cur_plan` attributes with the generated plan.
+        """
+        if 'rule' in self.model_name: 
+            return ''  # Skip LLM processing for rule-based bidders.
+
+        # Initialize the current status quo of the auction.
         self.status_quo = {
             'remaining_budget': self.budget,
             'total_profits': {bidder: 0 for bidder in self.all_bidders_status.keys()},
             'winning_bids': {bidder: {} for bidder in self.all_bidders_status.keys()},
         }
 
+        # Handle cases where no plan is required.
         if self.plan_strategy == 'none':
             self.plan_instruct = ''
             self.cur_plan = ''
             return None
 
+        # Prepare the LLM input messages.
         system_msg = {"role": "system", "content": self.system_message}
         plan_msg = {"role": "user", "content": plan_instruct}
         messages = [system_msg, plan_msg]
+        
+        # Call the LLM to generate a plan.
         result = self._run_llm_standalone(messages)
         
         if self.verbose:
             print(get_colored_text(plan_msg.content, 'red'))
             print(get_colored_text(result, 'green'))
-        
+
+        # Update internal states with the generated plan.
         self.dialogue_history += [
             plan_msg,
             {"role": "assistant", "content": result}
@@ -334,7 +483,8 @@ class Bidder(BaseModel):
         })
         self.cur_plan = result
         self.plan_instruct = plan_instruct
-        
+
+        # Track changes of the plan.
         self.changes_of_plan.append([
             f"{self.cur_item_id} (Initial)", 
             False, 
@@ -344,8 +494,21 @@ class Bidder(BaseModel):
         if self.verbose:
             print(f"Plan: {self.name} ({self.model_name}) for {self._get_cur_item()}.")
         return result
+
     
     def get_rebid_instruct(self, auctioneer_msg: str):
+        """
+        Logs the auctioneer's message and returns it.
+        
+        Args:
+            auctioneer_msg (str): The message received from the auctioneer.
+        
+        Returns:
+            str: The auctioneer's message.
+        
+        Description:
+            - Updates the dialogue history to include the received message.
+        """
         self.dialogue_history += [
             {"role": "user", "content": auctioneer_msg},
             {"role": "assistant", "content": ''}
@@ -353,6 +516,21 @@ class Bidder(BaseModel):
         return auctioneer_msg
 
     def get_bid_instruct(self, auctioneer_msg: str, bid_round: int):
+        """
+        Constructs a bidding instruction based on the current round and auctioneer's message.
+        
+        Args:
+            auctioneer_msg (str): The message from the auctioneer.
+            bid_round (int): The current bidding round number.
+        
+        Returns:
+            str: The formatted bidding instruction for the LLM.
+        
+        Description:
+            - Formats the auctioneer's message.
+            - Adds status information if it is the first bidding round.
+            - Updates the dialogue history with the instruction.
+        """
         auctioneer_msg = auctioneer_msg.replace(self.name, f'You ({self.name})')
         
         bid_instruct = INSTRUCT_BID_TEMPLATE.format(
@@ -363,9 +541,10 @@ class Bidder(BaseModel):
             desire_desc=DESIRE_DESC[self.desire],
             learning_statement='' if not self.enable_learning else _LEARNING_STATEMENT
         )
+
+        # For the first round, add the status quo information.
         if bid_round == 0:
             if self.plan_strategy in ['static', 'none']:
-                # if static planner, then no replanning is needed. status quo is updated in replanning. thus need to add status quo in bid instruct.
                 bid_instruct = f"""The status quo of this auction so far is:\n"{json.dumps(self.status_quo, indent=4)}"\n\n{bid_instruct}\n---\n"""
         else:
             bid_instruct = f'Now, the auctioneer says: "{auctioneer_msg}"'
@@ -375,27 +554,39 @@ class Bidder(BaseModel):
             {"role": "assistant", "content": ''}
         ]
         return bid_instruct
-    
+
     def bid_rule(self, cur_bid: int, min_markup_pct: float = 0.1):
-        '''
-        :param cur_bid: current highest bid
-        :param min_markup_pct: minimum percentage for bid increase
-        :param max_bid_cnt: maximum number of bids on one item (K = 1 starting bid + K-1 increase bid)
-        '''
-        # dialogue history already got bid_instruction.
+        """
+        Defines a basic rule-based bidding strategy.
+        
+        Args:
+            cur_bid (int): The current highest bid for the item.
+            min_markup_pct (float): Minimum percentage increase for the next bid.
+        
+        Returns:
+            int: The next bid value or -1 if the bidder cannot afford to continue.
+        
+        Description:
+            - If the current bid is zero or below, set the bid to the starting price of the item.
+            - Otherwise, increase the bid by `min_markup_pct` times the item's starting price.
+            - Update the dialogue history based on the decision.
+        """
         cur_item = self._get_cur_item()
         
+        # Calculate the next bid based on the current bid and markup.
         if cur_bid <= 0:
             next_bid = cur_item.price
         else:
             next_bid = cur_bid + min_markup_pct * cur_item.price
-        
+
+        # Ensure the bid is within the budget and the maximum bid count is not exceeded.
         if self.budget - next_bid >= 0 and self.rule_bid_cnt < self.max_bid_cnt:
             msg = int(next_bid)
             self.rule_bid_cnt += 1
         else:
-            msg = -1
-        
+            msg = -1  # Indicates withdrawal from the auction.
+
+        # Update the dialogue history with the decision.
         content = f'The current highest bid for {cur_item.name} is ${cur_bid}. '
         content += "I'm out!" if msg < 0 else f"I bid ${msg}! (Rule generated)"
         self.dialogue_history += [
@@ -404,17 +595,28 @@ class Bidder(BaseModel):
         ]
         
         return msg
-    
+
     def bid(self, bid_instruct):
-        '''
-        Bid for an item with auctioneer's instruction and bidding history.
-        bid_history = bid(system_message, instruct_plan, plan, bid_history)
-        '''
+        """
+        Constructs a bid based on the bidding instruction and current history.
+        
+        Args:
+            bid_instruct (str): The instruction for constructing the bid.
+        
+        Returns:
+            str: The generated bid response.
+        
+        Description:
+            - Uses the LLM to generate a bid based on the system and user messages.
+            - Updates dialogue and prompt history.
+            - Tracks the total number of bids.
+        """
         if self.model_name == 'rule':
-            return ''
+            return ''  # Skip bid generation for rule-based bidders.
         
         bid_msg = {"role": "user", "content": bid_instruct}
         
+        # Prepare LLM messages based on the current plan strategy.
         if self.plan_strategy == 'none':
             messages = [{"role": "system", "content": self.system_message}]
         else:
@@ -425,24 +627,24 @@ class Bidder(BaseModel):
         self.bid_history += [bid_msg]
         messages += self.bid_history
         
+        # Call the LLM with prepared messages to generate a bid.
         result = self._run_llm_standalone(messages)
         
         self.bid_history += [{"role": "assistant", "content": self.cur_plan}]
-
         self.dialogue_history += [
             {"role": "user", "content": ''},
             {"role": "assistant", "content": result}
         ]
         
         self.llm_prompt_history.append({
-            'messages': [{x.role: x.content} for x in messages],
+            'messages': [{x['role']: x['content']} for x in messages],
             'result': result,
             'tag': f'bid_{self.cur_item_id}'
         })
         
         if self.verbose:
-            print(get_colored_text(bid_instruct, 'yellow'))
-            print(get_colored_text(result, 'green'))
+            print(bid_instruct)
+            print(result)
         
             print(f"Bid: {self.name} ({self.model_name}) for {self._get_cur_item()}.")
         self.total_bid_cnt += 1
